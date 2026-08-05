@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "repositories": {
+    "organization-workflows": {
+      "repository": "FleetWorkAI/.github",
+      "requiredChecks": ["Dispatcher tests", "Secrets (gitleaks)"]
+    },
+    "fleetwork-web": {
+      "repository": "FleetWorkAI/fleetwork-web",
+      "requiredChecks": [
+        "tsc + vitest",
+        "Secrets (gitleaks)",
+        "Dependencies (npm audit)"
+      ]
+    },
+    "agent-runner": {
+      "repository": "FleetWorkAI/agent-runner",
+      "requiredChecks": [
+        "cargo test",
+        "cargo build --release",
+        "Secrets (gitleaks)",
+        "Dependencies (cargo audit)"
+      ]
+    },
+    "agent-coordinator": {
+      "repository": "FleetWorkAI/agent-coordinator",
+      "requiredChecks": [
+        "cargo test",
+        "Secrets (gitleaks)",
+        "Dependencies (cargo audit)"
+      ]
+    },
+    "deploy-notifier": {
+      "repository": "charlesDabard/deploy-notifier",
+      "requiredChecks": ["unittest", "Secrets (gitleaks)"]
+    }
+  }
+}

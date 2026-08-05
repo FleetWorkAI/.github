@@ -1,0 +1,47 @@
+name: Merge checked PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Allowlisted repository
+        required: true
+        type: choice
+        options:
+          - organization-workflows
+          - fleetwork-web
+          - agent-runner
+          - agent-coordinator
+          - deploy-notifier
+      pull_request:
+        description: Pull request number
+        required: true
+        type: number
+
+concurrency:
+  group: merge-${{ inputs.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    name: Validate exact head and merge
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate merge helper
+        run: python -m unittest discover tests -v
+      - name: Merge exact checked head
+        env:
+          FLEETWORK_GITHUB_WRITE_TOKEN: ${{ secrets.FLEETWORK_GITHUB_WRITE_TOKEN }}
+        run: >-
+          python scripts/merge_checked_pr.py
+          --config config/repositories.json
+          --repository '${{ inputs.repository }}'
+          --pr '${{ inputs.pull_request }}'
