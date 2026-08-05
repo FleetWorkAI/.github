@@ -1,0 +1,54 @@
+name: Deploy Coolify
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Allowlisted production service
+        required: true
+        type: choice
+        options:
+          - web-worker
+          - agent-runner
+          - agent-coordinator
+      sha:
+        description: Full SHA currently at the repository main branch
+        required: true
+        type: string
+      dry_run:
+        description: Validate main and required checks without changing Coolify
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: production-fleetwork
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Validate and deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate dispatcher
+        run: python -m unittest discover tests -v
+      - name: Gate exact SHA and deploy sequentially
+        env:
+          FLEETWORK_GITHUB_READ_TOKEN: ${{ secrets.FLEETWORK_GITHUB_READ_TOKEN }}
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+        run: >-
+          python scripts/deploy_coolify.py
+          --config config/coolify-services.json
+          --service '${{ inputs.service }}'
+          --sha '${{ inputs.sha }}'
+          ${{ inputs.dry_run && '--dry-run' || '' }}

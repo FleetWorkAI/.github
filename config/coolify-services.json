@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "services": {
+    "web-worker": {
+      "repository": "FleetWorkAI/fleetwork-web",
+      "requiredChecks": [
+        "tsc + vitest",
+        "Secrets (gitleaks)",
+        "Dependencies (npm audit)"
+      ],
+      "targets": [
+        {
+          "name": "fleetwork-web",
+          "uuid": "yfhbnfncm8ec28qqbjbnu4cc",
+          "bootMarker": "Ready in|Next\\.js"
+        },
+        {
+          "name": "fleetwork-worker",
+          "uuid": "vq0yi3n9ldy1k4nxwywye9ge",
+          "bootMarker": "\\[worker\\] démarré"
+        }
+      ]
+    },
+    "agent-runner": {
+      "repository": "FleetWorkAI/agent-runner",
+      "requiredChecks": [
+        "cargo test",
+        "cargo build --release",
+        "Secrets (gitleaks)",
+        "Dependencies (cargo audit)"
+      ],
+      "targets": [
+        {
+          "name": "agent-runner",
+          "uuid": "yi0o3a7wwmc3bv5hhjx15ppi",
+          "bootMarker": "starting fleetwork orchestrator"
+        }
+      ]
+    },
+    "agent-coordinator": {
+      "repository": "FleetWorkAI/agent-coordinator",
+      "requiredChecks": [
+        "cargo test",
+        "Secrets (gitleaks)",
+        "Dependencies (cargo audit)"
+      ],
+      "targets": [
+        {
+          "name": "agent-coordinator",
+          "uuid": "ryhnzym3sqnv34qa7sh9i4ol",
+          "bootMarker": "starting fleetwork memory-session-layer"
+        }
+      ]
+    }
+  }
+}
