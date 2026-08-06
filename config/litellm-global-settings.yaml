@@ -1,0 +1,6 @@
+litellm_settings:
+  include_cost_in_streaming_usage: true
+  drop_params: false
+router_settings:
+  num_retries: 0
+  max_fallbacks: 0
