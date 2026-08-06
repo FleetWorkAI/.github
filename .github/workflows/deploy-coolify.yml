@@ -41,14 +41,30 @@ jobs:
           python-version: "3.12"
       - name: Validate dispatcher
         run: python -m unittest discover tests -v
-      - name: Gate exact SHA and deploy sequentially
+      - name: Gate exact SHA
+        if: inputs.dry_run
         env:
           FLEETWORK_GITHUB_READ_TOKEN: ${{ secrets.FLEETWORK_GITHUB_READ_TOKEN }}
           COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
           COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          INPUT_SERVICE: ${{ inputs.service }}
+          INPUT_SHA: ${{ inputs.sha }}
         run: >-
           python scripts/deploy_coolify.py
           --config config/coolify-services.json
-          --service '${{ inputs.service }}'
-          --sha '${{ inputs.sha }}'
-          ${{ inputs.dry_run && '--dry-run' || '' }}
+          --service "$INPUT_SERVICE"
+          --sha "$INPUT_SHA"
+          --dry-run
+      - name: Deploy the exact SHA sequentially
+        if: ${{ !inputs.dry_run }}
+        env:
+          FLEETWORK_GITHUB_READ_TOKEN: ${{ secrets.FLEETWORK_GITHUB_READ_TOKEN }}
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          INPUT_SERVICE: ${{ inputs.service }}
+          INPUT_SHA: ${{ inputs.sha }}
+        run: >-
+          python scripts/deploy_coolify.py
+          --config config/coolify-services.json
+          --service "$INPUT_SERVICE"
+          --sha "$INPUT_SHA"
