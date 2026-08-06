@@ -1,0 +1,147 @@
+name: Reconcile LiteLLM models
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_sha:
+        description: Full fleetwork-web SHA currently at main
+        required: true
+        type: string
+      mode:
+        description: Read drift, apply desired state, or run workload smoke
+        required: true
+        default: check
+        type: choice
+        options:
+          - check
+          - apply
+          - smoke
+      adopt_existing:
+        description: One-time adoption of existing unmanaged public aliases
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: production-fleetwork
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    name: Validate and reconcile
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    steps:
+      - name: Check workflow inputs
+        env:
+          MODE: ${{ inputs.mode }}
+          ADOPT_EXISTING: ${{ inputs.adopt_existing }}
+        run: |
+          if [ "$ADOPT_EXISTING" = "true" ] && [ "$MODE" != "apply" ]; then
+            echo "::error::adopt_existing is valid only in apply mode"
+            exit 1
+          fi
+      - name: Checkout deployment gate
+        uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate dispatcher
+        run: python -m unittest discover tests -v
+      - name: Validate versioned LiteLLM global policy
+        run: >-
+          python scripts/check_litellm_global_config.py validate
+          --contract config/litellm-global-config.json
+          --repository-root .
+      - name: Gate the exact web SHA
+        env:
+          FLEETWORK_GITHUB_READ_TOKEN: ${{ secrets.FLEETWORK_GITHUB_READ_TOKEN }}
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          WEB_SHA: ${{ inputs.web_sha }}
+        run: >-
+          python scripts/deploy_coolify.py
+          --config config/coolify-services.json
+          --service web-worker
+          --sha "$WEB_SHA"
+          --dry-run
+      - name: Checkout the approved catalog
+        uses: actions/checkout@v4
+        with:
+          repository: FleetWorkAI/fleetwork-web
+          ref: ${{ inputs.web_sha }}
+          token: ${{ secrets.FLEETWORK_GITHUB_READ_TOKEN }}
+          persist-credentials: false
+          path: fleetwork-web
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: fleetwork-web/package-lock.json
+      - name: Verify immutable catalog
+        working-directory: fleetwork-web
+        run: |
+          npm ci
+          npm run catalog:check
+          npm run catalog:test
+          npm run litellm:models:test
+      - name: Prepare read-only LiteLLM SSH gate
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.FLEETWORK_PRODUCTION_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.FLEETWORK_PRODUCTION_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/litellm-global-gate"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/litellm-global-gate/identity"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/litellm-global-gate/known_hosts"
+      - name: Gate source, host-mounted, and runtime LiteLLM policy
+        env:
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          FLEETWORK_PRODUCTION_SSH_HOST: ${{ secrets.FLEETWORK_PRODUCTION_SSH_HOST }}
+          FLEETWORK_PRODUCTION_SSH_PORT: ${{ secrets.FLEETWORK_PRODUCTION_SSH_PORT }}
+        run: >-
+          python scripts/check_litellm_global_config.py check-live
+          --contract config/litellm-global-config.json
+          --repository-root .
+          --ssh-identity "$RUNNER_TEMP/litellm-global-gate/identity"
+          --ssh-known-hosts "$RUNNER_TEMP/litellm-global-gate/known_hosts"
+      - name: Check model drift
+        if: inputs.mode == 'check'
+        working-directory: fleetwork-web
+        env:
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_READ_KEY: ${{ secrets.LITELLM_READ_KEY }}
+        run: npm run litellm:models -- check
+      - name: Smoke with the workload probe
+        if: inputs.mode == 'smoke'
+        working-directory: fleetwork-web
+        env:
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_READ_KEY: ${{ secrets.LITELLM_READ_KEY }}
+          LITELLM_PROBE_KEY: ${{ secrets.LITELLM_PROBE_KEY }}
+        run: npm run litellm:models -- smoke
+      - name: Apply managed models
+        if: inputs.mode == 'apply' && !inputs.adopt_existing
+        working-directory: fleetwork-web
+        env:
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_ADMIN_KEY: ${{ secrets.LITELLM_ADMIN_KEY }}
+          LITELLM_PROBE_KEY: ${{ secrets.LITELLM_PROBE_KEY }}
+        run: npm run litellm:models -- apply
+      - name: Adopt and apply managed models
+        if: inputs.mode == 'apply' && inputs.adopt_existing
+        working-directory: fleetwork-web
+        env:
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_ADMIN_KEY: ${{ secrets.LITELLM_ADMIN_KEY }}
+          LITELLM_PROBE_KEY: ${{ secrets.LITELLM_PROBE_KEY }}
+        run: npm run litellm:models -- apply --adopt-existing
