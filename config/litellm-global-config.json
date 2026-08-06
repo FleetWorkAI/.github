@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "litellmVersion": "1.83.10",
+  "settingsSource": "config/litellm-global-settings.yaml",
+  "settingsSemanticDigest": "sha256:1c0e60bca81fe2b85f00191e895a2d94c0e515f9c405bead0aa086185810d927",
+  "coolify": {
+    "serviceUuid": "fnsbybwyqvg6ocuqzsqz3mzl",
+    "containerName": "litellm-fnsbybwyqvg6ocuqzsqz3mzl",
+    "composeSource": "./litellm-config.yaml",
+    "hostSource": "/data/coolify/services/fnsbybwyqvg6ocuqzsqz3mzl/litellm-config.yaml",
+    "containerTarget": "/app/config.yaml",
+    "sshUser": "debian"
+  }
+}
