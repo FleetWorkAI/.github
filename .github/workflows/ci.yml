@@ -25,4 +25,9 @@ jobs:
       - name: Unit tests
         run: python -m unittest discover tests -v
       - name: Compile
-        run: python -m py_compile scripts/deploy_coolify.py scripts/merge_checked_pr.py
+        run: >-
+          python -m py_compile
+          scripts/check_litellm_global_config.py
+          scripts/deploy_coolify.py
+          scripts/merge_checked_pr.py
+          scripts/reconcile_litellm_keys.py
