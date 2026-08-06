@@ -1,0 +1,54 @@
+{
+  "catalogVersion": "2026.08.05.4",
+  "models": [
+    {
+      "alias": "claude-opus-4-7",
+      "selectable": true,
+      "lifecycle": {
+        "status": "active"
+      }
+    },
+    {
+      "alias": "claude-sonnet-4-6",
+      "selectable": true,
+      "lifecycle": {
+        "status": "active"
+      }
+    },
+    {
+      "alias": "claude-haiku-4-5",
+      "selectable": true,
+      "lifecycle": {
+        "status": "active"
+      }
+    },
+    {
+      "alias": "gpt-5-nano",
+      "selectable": true,
+      "lifecycle": {
+        "status": "active"
+      }
+    },
+    {
+      "alias": "gpt-4o",
+      "selectable": true,
+      "lifecycle": {
+        "status": "active"
+      }
+    },
+    {
+      "alias": "gpt-4o-mini",
+      "selectable": false,
+      "lifecycle": {
+        "status": "deprecated"
+      }
+    }
+  ],
+  "internalModels": [
+    {
+      "alias": "text-embedding-3-small",
+      "purpose": "embedding",
+      "selectable": false
+    }
+  ]
+}

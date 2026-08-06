@@ -1,0 +1,161 @@
+name: Reconcile LiteLLM workload keys
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_sha:
+        description: Full fleetwork-web SHA carrying the approved catalog at main
+        required: true
+        type: string
+      mode:
+        description: Report drift, apply policy, rotate one credential, or smoke every grant
+        required: true
+        default: check
+        type: choice
+        options:
+          - check
+          - apply
+          - rotate
+          - smoke
+      workload:
+        description: Workload to rotate when mode is rotate
+        required: true
+        default: runner
+        type: choice
+        options:
+          - runner
+          - coordinator
+          - catalog-probe
+          - spend-reader
+
+concurrency:
+  group: production-fleetwork
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    name: Validate and reconcile workload keys
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Checkout deployment gate
+        uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate reconcilers
+        run: python -m unittest discover tests -v
+      - name: Validate versioned LiteLLM global policy
+        run: >-
+          python scripts/check_litellm_global_config.py validate
+          --contract config/litellm-global-config.json
+          --repository-root .
+      - name: Gate the exact catalog SHA
+        env:
+          FLEETWORK_GITHUB_READ_TOKEN: ${{ secrets.FLEETWORK_GITHUB_READ_TOKEN }}
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          WEB_SHA: ${{ inputs.web_sha }}
+        run: >-
+          python scripts/deploy_coolify.py
+          --config config/coolify-services.json
+          --service web-worker
+          --sha "$WEB_SHA"
+          --dry-run
+      - name: Checkout the approved catalog
+        uses: actions/checkout@v4
+        with:
+          repository: FleetWorkAI/fleetwork-web
+          ref: ${{ inputs.web_sha }}
+          token: ${{ secrets.FLEETWORK_GITHUB_READ_TOKEN }}
+          persist-credentials: false
+          path: fleetwork-web
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: fleetwork-web/package-lock.json
+      - name: Verify immutable catalog
+        working-directory: fleetwork-web
+        run: |
+          npm ci
+          npm run catalog:check
+          npm run catalog:test
+      - name: Prepare read-only LiteLLM SSH gate
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.FLEETWORK_PRODUCTION_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.FLEETWORK_PRODUCTION_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+          umask 077
+          mkdir -p "$RUNNER_TEMP/litellm-global-gate"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/litellm-global-gate/identity"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/litellm-global-gate/known_hosts"
+      - name: Gate source, host-mounted, and runtime LiteLLM policy
+        env:
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          FLEETWORK_PRODUCTION_SSH_HOST: ${{ secrets.FLEETWORK_PRODUCTION_SSH_HOST }}
+          FLEETWORK_PRODUCTION_SSH_PORT: ${{ secrets.FLEETWORK_PRODUCTION_SSH_PORT }}
+        run: >-
+          python scripts/check_litellm_global_config.py check-live
+          --contract config/litellm-global-config.json
+          --repository-root .
+          --ssh-identity "$RUNNER_TEMP/litellm-global-gate/identity"
+          --ssh-known-hosts "$RUNNER_TEMP/litellm-global-gate/known_hosts"
+      - name: Check workload-key drift
+        if: inputs.mode == 'check'
+        env:
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_ADMIN_KEY: ${{ secrets.LITELLM_ADMIN_KEY }}
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          FLEETWORK_GITHUB_WRITE_TOKEN: ${{ secrets.FLEETWORK_GITHUB_WRITE_TOKEN }}
+        run: >-
+          python scripts/reconcile_litellm_keys.py check
+          --config config/litellm-workload-keys.json
+          --catalog fleetwork-web/config/llm/catalog.v1.json
+      - name: Apply workload keys and publish new secrets
+        if: inputs.mode == 'apply'
+        env:
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_ADMIN_KEY: ${{ secrets.LITELLM_ADMIN_KEY }}
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          FLEETWORK_GITHUB_WRITE_TOKEN: ${{ secrets.FLEETWORK_GITHUB_WRITE_TOKEN }}
+        run: >-
+          python scripts/reconcile_litellm_keys.py apply
+          --config config/litellm-workload-keys.json
+          --catalog fleetwork-web/config/llm/catalog.v1.json
+      - name: Rotate one workload key and publish its replacement
+        if: inputs.mode == 'rotate'
+        env:
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_ADMIN_KEY: ${{ secrets.LITELLM_ADMIN_KEY }}
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          FLEETWORK_GITHUB_WRITE_TOKEN: ${{ secrets.FLEETWORK_GITHUB_WRITE_TOKEN }}
+        run: >-
+          python scripts/reconcile_litellm_keys.py rotate
+          --workload "${{ inputs.workload }}"
+          --config config/litellm-workload-keys.json
+          --catalog fleetwork-web/config/llm/catalog.v1.json
+      - name: Smoke positive and negative workload grants
+        if: inputs.mode == 'smoke'
+        env:
+          LITELLM_BASE_URL: ${{ secrets.LITELLM_BASE_URL }}
+          LITELLM_ADMIN_KEY: ${{ secrets.LITELLM_ADMIN_KEY }}
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          FLEETWORK_SMOKE_CATALOG_PROBE_KEY: ${{ secrets.LITELLM_PROBE_KEY }}
+        run: >-
+          python scripts/reconcile_litellm_keys.py smoke
+          --config config/litellm-workload-keys.json
+          --catalog fleetwork-web/config/llm/catalog.v1.json
