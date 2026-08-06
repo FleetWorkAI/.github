@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": "2026.08.05.4",
+  "litellmVersion": "1.83.10",
+  "workloads": [
+    {
+      "id": "runner",
+      "keyAlias": "fleet-runner",
+      "legacyAliases": [
+        "fleet-services"
+      ],
+      "models": [
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+        "gpt-5-nano",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "text-embedding-3-small"
+      ],
+      "allowedRoutes": [
+        "/chat/completions",
+        "/v1/chat/completions",
+        "/embeddings",
+        "/v1/embeddings",
+        "/models",
+        "/v1/models"
+      ],
+      "permissions": {},
+      "limits": {},
+      "sinks": [
+        {
+          "type": "coolify_env",
+          "applicationUuid": "yi0o3a7wwmc3bv5hhjx15ppi",
+          "key": "LITELLM_API_KEY",
+          "isPreview": false
+        }
+      ]
+    },
+    {
+      "id": "coordinator",
+      "keyAlias": "fleet-coordinator",
+      "legacyAliases": [],
+      "models": [
+        "gpt-5-nano"
+      ],
+      "allowedRoutes": [
+        "/chat/completions",
+        "/v1/chat/completions"
+      ],
+      "permissions": {},
+      "limits": {},
+      "sinks": [
+        {
+          "type": "coolify_env",
+          "applicationUuid": "ryhnzym3sqnv34qa7sh9i4ol",
+          "key": "LITELLM_API_KEY",
+          "isPreview": false
+        }
+      ]
+    },
+    {
+      "id": "catalog-probe",
+      "keyAlias": "fleet-catalog-probe",
+      "legacyAliases": [],
+      "models": [
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+        "gpt-5-nano",
+        "gpt-4o",
+        "gpt-4o-mini"
+      ],
+      "allowedRoutes": [
+        "/chat/completions",
+        "/v1/chat/completions",
+        "/models",
+        "/v1/models"
+      ],
+      "permissions": {},
+      "limits": {
+        "rpm": 6,
+        "tpm": 100000,
+        "maxParallelRequests": 1,
+        "maxBudgetUsd": 1,
+        "budgetDuration": "30d"
+      },
+      "sinks": [
+        {
+          "type": "github_environment_secret",
+          "repository": "FleetWorkAI/.github",
+          "environment": "production",
+          "key": "LITELLM_PROBE_KEY",
+          "fingerprintKey": "LITELLM_PROBE_KEY_SHA256"
+        }
+      ]
+    },
+    {
+      "id": "spend-reader",
+      "keyAlias": "fleet-spend-reader",
+      "legacyAliases": [],
+      "models": [],
+      "allowedRoutes": [
+        "/spend/logs"
+      ],
+      "permissions": {},
+      "limits": {
+        "rpm": 60,
+        "maxParallelRequests": 4
+      },
+      "sinks": [
+        {
+          "type": "coolify_env",
+          "applicationUuid": "yi0o3a7wwmc3bv5hhjx15ppi",
+          "key": "LITELLM_SPEND_API_KEY",
+          "isPreview": false
+        }
+      ]
+    }
+  ]
+}
