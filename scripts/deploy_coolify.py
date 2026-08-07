@@ -21,6 +21,20 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SUCCESS = "success"
 TERMINAL_FAILURES = {"cancelled", "error", "failed"}
 
+# Horodatages que Coolify est susceptible d'avancer quand un conteneur revient
+# en ligne, du plus fiable au moins fiable.
+#
+# `last_restart_at` vaut toujours `null` sur l'instance LanaCool. Un contrôle
+# fondé sur lui seul refusait donc TOUT déploiement réel, y compris ceux qui
+# avaient parfaitement abouti : mesuré le 2026-08-07 sur un déploiement du
+# runner terminé, conteneur sain, journaux frais, refusé par ce seul contrôle.
+# Le test qui le couvrait passait parce que sa donnée d'exemple renseignait un
+# champ que l'API ne renseigne jamais.
+#
+# `last_online_at` est celui que Coolify avance réellement, et il dit
+# exactement ce qu'on cherche à prouver : le conteneur est revenu en ligne.
+RESTART_MARKER_FIELDS = ("last_online_at", "last_restart_at")
+
 
 class GateError(RuntimeError):
     """A validation or deployment invariant failed."""
@@ -269,6 +283,20 @@ def wait_for_terminal(
     raise GateError(f"deployment {deploy_uuid} did not finish before timeout")
 
 
+def restart_marker(app: dict[str, Any]) -> tuple[str, str] | None:
+    """Le premier horodatage de redémarrage réellement renseigné, avec son nom.
+
+    Renvoie le nom du champ en plus de sa valeur : sans lui, une valeur lue
+    dans un champ avant le déploiement et dans un autre après passerait pour
+    un changement, alors qu'elle ne prouve rien.
+    """
+    for field in RESTART_MARKER_FIELDS:
+        value = app.get(field)
+        if isinstance(value, str) and value.strip():
+            return field, value
+    return None
+
+
 def deploy_target(
     coolify: JsonClient,
     service: Service,
@@ -278,7 +306,7 @@ def deploy_target(
     poll_seconds: int,
 ) -> str:
     before = preflight_target(coolify, service, target)
-    previous_restart = before.get("last_restart_at")
+    previous_restart = restart_marker(before)
     coolify.patch(f"/applications/{target.uuid}", {"git_commit_sha": sha})
     pinned = coolify.get(f"/applications/{target.uuid}")
     if not isinstance(pinned, dict) or str(pinned.get("git_commit_sha", "")).lower() != sha:
@@ -294,8 +322,12 @@ def deploy_target(
         raise GateError(f"{target.name} no longer pins the approved SHA")
     if "running" not in str(after.get("status", "")):
         raise GateError(f"{target.name} is not running after deployment")
-    current_restart = after.get("last_restart_at")
-    if not current_restart or current_restart == previous_restart:
+    current_restart = restart_marker(after)
+    if current_restart is None:
+        raise GateError(f"{target.name} exposes no restart timestamp to compare")
+    if previous_restart is not None and previous_restart[0] != current_restart[0]:
+        raise GateError(f"{target.name} switched restart timestamp field mid-deployment")
+    if current_restart == previous_restart:
         raise GateError(f"{target.name} has no fresh restart marker")
     logs_payload = coolify.get(f"/applications/{target.uuid}/logs?lines=200")
     logs = logs_payload.get("logs", "") if isinstance(logs_payload, dict) else str(logs_payload)
