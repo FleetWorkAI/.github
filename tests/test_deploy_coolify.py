@@ -14,6 +14,7 @@ from scripts.deploy_coolify import (
     deploy_target,
     load_service,
     preflight_target,
+    restart_marker,
     validate_sha,
     verify_github,
 )
@@ -159,15 +160,23 @@ class CoolifyGateTests(unittest.TestCase):
 
     @patch("scripts.deploy_coolify.time.sleep", return_value=None)
     def test_deploy_pins_sha_and_proves_fresh_boot(self, _sleep):
+        # Forme réelle de l'API LanaCool : `last_restart_at` reste null, c'est
+        # `last_online_at` qui avance. L'ancienne version de ce test renseignait
+        # `last_restart_at`, donc elle validait le code contre une fiction.
         app_before = {
             "name": "agent-runner",
             "git_repository": "FleetWorkAI/agent-runner",
             "git_branch": "main",
             "git_commit_sha": "HEAD",
-            "last_restart_at": "before",
+            "last_online_at": "2026-08-07 18:09:31",
+            "last_restart_at": None,
             "status": "running:healthy",
         }
-        app_after = {**app_before, "git_commit_sha": SHA, "last_restart_at": "after"}
+        app_after = {
+            **app_before,
+            "git_commit_sha": SHA,
+            "last_online_at": "2026-08-07 18:56:56",
+        }
         client = FakeClient(
             {
                 ("GET", "/applications/runner-uuid"): (app_before, app_after, app_after),
@@ -183,6 +192,65 @@ class CoolifyGateTests(unittest.TestCase):
         self.assertEqual(deploy_id, "dep-1")
         self.assertIn(("PATCH", "/applications/runner-uuid", {"git_commit_sha": SHA}), client.calls)
 
+    def test_restart_marker_names_the_field_it_read(self):
+        self.assertEqual(
+            restart_marker({"last_online_at": "2026-08-07 18:56:56"}),
+            ("last_online_at", "2026-08-07 18:56:56"),
+        )
+        self.assertEqual(
+            restart_marker({"last_online_at": None, "last_restart_at": "x"}),
+            ("last_restart_at", "x"),
+        )
+        self.assertIsNone(restart_marker({"last_online_at": None, "last_restart_at": None}))
+        self.assertIsNone(restart_marker({"last_online_at": "   "}))
+
+    @patch("scripts.deploy_coolify.time.sleep", return_value=None)
+    def test_deployment_without_any_restart_timestamp_is_refused(self, _sleep):
+        # Le cas réel du 2026-08-07 : Coolify laisse les deux champs à null.
+        # La porte doit refuser plutôt que de croire le conteneur redémarré.
+        app_before = {
+            "name": "agent-runner",
+            "git_repository": "FleetWorkAI/agent-runner",
+            "git_branch": "main",
+            "git_commit_sha": "HEAD",
+            "last_online_at": None,
+            "last_restart_at": None,
+            "status": "running:healthy",
+        }
+        app_after = {**app_before, "git_commit_sha": SHA}
+        client = FakeClient(
+            {
+                ("GET", "/applications/runner-uuid"): (app_before, app_after, app_after),
+                ("GET", "/applications/runner-uuid/envs"): [{"key": "ONE"}],
+                ("GET", "/deploy?uuid=runner-uuid&force=false"): {"deployment_uuid": "dep-1"},
+                ("GET", "/deployments/dep-1"): {"status": "finished", "commit": SHA},
+            }
+        )
+        with self.assertRaisesRegex(GateError, "exposes no restart timestamp"):
+            deploy_target(client, service(), service().targets[0], SHA, 1, 0)
+
+    @patch("scripts.deploy_coolify.time.sleep", return_value=None)
+    def test_unchanged_restart_timestamp_is_refused(self, _sleep):
+        # Le conteneur n'a pas redémarré : même horodatage avant et après.
+        app = {
+            "name": "agent-runner",
+            "git_repository": "FleetWorkAI/agent-runner",
+            "git_branch": "main",
+            "git_commit_sha": SHA,
+            "last_online_at": "2026-08-07 18:09:31",
+            "status": "running:healthy",
+        }
+        client = FakeClient(
+            {
+                ("GET", "/applications/runner-uuid"): (app, app, app),
+                ("GET", "/applications/runner-uuid/envs"): [{"key": "ONE"}],
+                ("GET", "/deploy?uuid=runner-uuid&force=false"): {"deployment_uuid": "dep-1"},
+                ("GET", "/deployments/dep-1"): {"status": "finished", "commit": SHA},
+            }
+        )
+        with self.assertRaisesRegex(GateError, "no fresh restart marker"):
+            deploy_target(client, service(), service().targets[0], SHA, 1, 0)
+
     @patch("scripts.deploy_coolify.time.sleep", return_value=None)
     def test_deployment_commit_mismatch_is_refused(self, _sleep):
         app = {
@@ -190,7 +258,7 @@ class CoolifyGateTests(unittest.TestCase):
             "git_repository": "FleetWorkAI/agent-runner",
             "git_branch": "main",
             "git_commit_sha": SHA,
-            "last_restart_at": "before",
+            "last_online_at": "2026-08-07 18:09:31",
             "status": "running:healthy",
         }
         client = FakeClient(
