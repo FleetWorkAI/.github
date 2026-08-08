@@ -15,8 +15,10 @@ from scripts.deploy_coolify import (
     load_service,
     preflight_target,
     restart_marker,
+    run,
     validate_sha,
     verify_github,
+    verify_prerequisites,
 )
 
 
@@ -64,6 +66,150 @@ def check(name, conclusion="success", run_id=1):
         "conclusion": conclusion,
         "app": {"slug": "github-actions"},
     }
+
+
+def deux_services(requires=("amont",)):
+    """Un aval qui exige un amont, et l'amont lui-meme."""
+    return {
+        "schemaVersion": 1,
+        "services": {
+            "amont": {
+                "repository": "FleetWorkAI/agent-runner",
+                "requiredChecks": ["CI"],
+                "targets": [{"name": "amont-app", "uuid": "amont-uuid", "bootMarker": "ready"}],
+            },
+            "aval": {
+                "repository": "FleetWorkAI/agent-coordinator",
+                "requiredChecks": ["CI"],
+                "targets": [{"name": "aval-app", "uuid": "aval-uuid", "bootMarker": "ready"}],
+                "requires": list(requires),
+            },
+        },
+    }
+
+
+class PrerequisiteTests(unittest.TestCase):
+    """L'ordre de deploiement, impose par le script et non par un plan.
+
+    Deployer le coordinateur avant le runner ne perd pas un champ : la fonction
+    SQL rend `false` et `admit_run` refuse 100 % des admissions. Jusqu'ici cet
+    ordre n'existait que dans un document, et le script prend `--service`, un
+    seul a la fois : se tromper etait un clic.
+    """
+
+    def _config(self, contenu):
+        directory = tempfile.mkdtemp()
+        path = Path(directory) / "config.json"
+        path.write_text(json.dumps(contenu))
+        return path
+
+    def test_prerequisite_a_jour_laisse_passer(self):
+        # Contrôle POSITIF. Sans lui, un refus systematique passerait le test
+        # negatif ci-dessous tout en bloquant tous les deploiements.
+        path = self._config(deux_services())
+        aval = load_service(path, "aval")
+        github = FakeClient({("GET", "/repos/FleetWorkAI/agent-runner/commits/main"): {"sha": SHA}})
+        coolify = FakeClient({("GET", "/applications/amont-uuid"): {"git_commit_sha": SHA}})
+        verify_prerequisites(path, coolify, github, aval)
+
+    def test_prerequisite_en_retard_est_refuse(self):
+        path = self._config(deux_services())
+        aval = load_service(path, "aval")
+        github = FakeClient({("GET", "/repos/FleetWorkAI/agent-runner/commits/main"): {"sha": SHA}})
+        coolify = FakeClient({("GET", "/applications/amont-uuid"): {"git_commit_sha": "b" * 40}})
+        with self.assertRaisesRegex(GateError, "prerequisite amont is behind"):
+            verify_prerequisites(path, coolify, github, aval)
+
+    def test_message_de_refus_dit_quoi_faire(self):
+        # Une porte qui refuse sans dire dans quel sens aller se contourne.
+        path = self._config(deux_services())
+        aval = load_service(path, "aval")
+        github = FakeClient({("GET", "/repos/FleetWorkAI/agent-runner/commits/main"): {"sha": SHA}})
+        coolify = FakeClient({("GET", "/applications/amont-uuid"): {"git_commit_sha": ""}})
+        with self.assertRaises(GateError) as capture:
+            verify_prerequisites(path, coolify, github, aval)
+        message = str(capture.exception)
+        self.assertIn("Deploy amont first", message)
+        self.assertIn("refuse every run", message)
+
+    def test_sans_prerequis_aucun_appel_reseau(self):
+        path = self._config(deux_services(requires=()))
+        aval = load_service(path, "aval")
+        github, coolify = FakeClient(), FakeClient()
+        verify_prerequisites(path, coolify, github, aval)
+        self.assertEqual(github.calls, [])
+        self.assertEqual(coolify.calls, [])
+
+    def test_prerequis_inconnu_est_refuse_au_chargement(self):
+        path = self._config(deux_services(requires=("fantome",)))
+        with self.assertRaisesRegex(GateError, "unknown prerequisite"):
+            load_service(path, "aval")
+
+    def test_un_service_ne_peut_pas_s_exiger_lui_meme(self):
+        path = self._config(deux_services(requires=("aval",)))
+        with self.assertRaisesRegex(GateError, "cannot require itself"):
+            load_service(path, "aval")
+
+    def _run_avec(self, sha_amont_deploye, dry_run):
+        """Joue `run()` de bout en bout, avec les deux clients simules."""
+        path = self._config(deux_services())
+        aval_repo = "/repos/FleetWorkAI/agent-coordinator"
+        github = FakeClient(
+            {
+                ("GET", f"{aval_repo}/commits/main"): {"sha": SHA},
+                ("GET", f"{aval_repo}/commits/{SHA}/check-runs?filter=latest&per_page=100"): {
+                    "total_count": 1,
+                    "check_runs": [check("CI")],
+                },
+                ("GET", "/repos/FleetWorkAI/agent-runner/commits/main"): {"sha": SHA},
+            }
+        )
+        coolify = FakeClient(
+            {
+                ("GET", "/applications/amont-uuid"): {"git_commit_sha": sha_amont_deploye},
+                ("GET", "/applications/aval-uuid"): {
+                    "name": "aval-app",
+                    "git_repository": "FleetWorkAI/agent-coordinator",
+                    "git_branch": "main",
+                },
+                ("GET", "/applications/aval-uuid/envs"): [],
+            }
+        )
+        args = argparse.Namespace(
+            config=path,
+            service="aval",
+            sha=SHA,
+            dry_run=dry_run,
+            timeout_seconds=1,
+            poll_seconds=0,
+        )
+        environnement = {
+            "FLEETWORK_GITHUB_READ_TOKEN": "jeton",
+            "COOLIFY_URL": "https://coolify.test",
+            "COOLIFY_API_TOKEN": "jeton",
+        }
+        with patch.dict(os.environ, environnement, clear=False):
+            with patch("scripts.deploy_coolify.JsonClient", side_effect=[github, coolify]):
+                return run(args)
+
+    def test_la_porte_est_branchee_sur_run(self):
+        # Une garde testee mais jamais appelee est une garde absente. Ce test
+        # passe par `run()`, donc il tombe si quelqu'un retire l'appel.
+        with self.assertRaisesRegex(GateError, "prerequisite amont is behind"):
+            self._run_avec("b" * 40, dry_run=True)
+
+    def test_le_vol_a_blanc_ne_valide_pas_un_ordre_faux(self):
+        # Un « validated » rendu sur un ordre inverse serait un feu vert pour la
+        # panne : c'est justement le mode qu'on utilise pour se rassurer.
+        resultat = self._run_avec(SHA, dry_run=True)
+        self.assertEqual(resultat["status"], "validated")
+
+    def test_la_configuration_livree_declare_la_chaine_reelle(self):
+        # Le fichier de production, pas une maquette : c'est lui qui protege.
+        reel = Path(__file__).resolve().parents[1] / "config" / "coolify-services.json"
+        self.assertEqual(load_service(reel, "agent-runner").requires, ())
+        self.assertEqual(load_service(reel, "agent-coordinator").requires, ("agent-runner",))
+        self.assertEqual(load_service(reel, "web-worker").requires, ("agent-coordinator",))
 
 
 class ConfigTests(unittest.TestCase):
