@@ -1,6 +1,41 @@
 {
   "schemaVersion": 1,
   "services": {
+    "agent-runner": {
+      "repository": "FleetWorkAI/agent-runner",
+      "requiredChecks": [
+        "cargo test",
+        "cargo build --release",
+        "Secrets (gitleaks)",
+        "Dependencies (cargo audit)"
+      ],
+      "targets": [
+        {
+          "name": "agent-runner",
+          "uuid": "yi0o3a7wwmc3bv5hhjx15ppi",
+          "bootMarker": "starting fleetwork orchestrator"
+        }
+      ],
+      "requires": []
+    },
+    "agent-coordinator": {
+      "repository": "FleetWorkAI/agent-coordinator",
+      "requiredChecks": [
+        "cargo test",
+        "Secrets (gitleaks)",
+        "Dependencies (cargo audit)"
+      ],
+      "targets": [
+        {
+          "name": "agent-coordinator",
+          "uuid": "ryhnzym3sqnv34qa7sh9i4ol",
+          "bootMarker": "starting fleetwork memory-session-layer"
+        }
+      ],
+      "requires": [
+        "agent-runner"
+      ]
+    },
     "web-worker": {
       "repository": "FleetWorkAI/fleetwork-web",
       "requiredChecks": [
@@ -19,37 +54,9 @@
           "uuid": "vq0yi3n9ldy1k4nxwywye9ge",
           "bootMarker": "\\[worker\\] démarré"
         }
-      ]
-    },
-    "agent-runner": {
-      "repository": "FleetWorkAI/agent-runner",
-      "requiredChecks": [
-        "cargo test",
-        "cargo build --release",
-        "Secrets (gitleaks)",
-        "Dependencies (cargo audit)"
       ],
-      "targets": [
-        {
-          "name": "agent-runner",
-          "uuid": "yi0o3a7wwmc3bv5hhjx15ppi",
-          "bootMarker": "starting fleetwork orchestrator"
-        }
-      ]
-    },
-    "agent-coordinator": {
-      "repository": "FleetWorkAI/agent-coordinator",
-      "requiredChecks": [
-        "cargo test",
-        "Secrets (gitleaks)",
-        "Dependencies (cargo audit)"
-      ],
-      "targets": [
-        {
-          "name": "agent-coordinator",
-          "uuid": "ryhnzym3sqnv34qa7sh9i4ol",
-          "bootMarker": "starting fleetwork memory-session-layer"
-        }
+      "requires": [
+        "agent-coordinator"
       ]
     }
   }

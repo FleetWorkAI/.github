@@ -104,6 +104,9 @@ class Service:
     repository: str
     required_checks: tuple[str, ...]
     targets: tuple[Target, ...]
+    # Services qui doivent deja tourner au sommet de leur `main` avant que
+    # celui-ci parte. Voir `verify_prerequisites`.
+    requires: tuple[str, ...] = ()
 
 
 def load_service(config_path: Path, service_name: str) -> Service:
@@ -143,11 +146,22 @@ def load_service(config_path: Path, service_name: str) -> Service:
             raise GateError(f"invalid boot marker for {name}") from error
         seen_uuids.add(uuid)
         targets.append(Target(name=name, uuid=uuid, boot_marker=marker))
+    requires = raw.get("requires", [])
+    if not isinstance(requires, list) or any(not isinstance(item, str) for item in requires):
+        raise GateError("requires must be a list of service names")
+    if len(set(requires)) != len(requires):
+        raise GateError("requires contains duplicates")
+    for name in requires:
+        if name == service_name:
+            raise GateError(f"service {service_name!r} cannot require itself")
+        if name not in config["services"]:
+            raise GateError(f"unknown prerequisite {name!r} for {service_name!r}")
     return Service(
         name=service_name,
         repository=repository,
         required_checks=tuple(checks),
         targets=tuple(targets),
+        requires=tuple(requires),
     )
 
 
@@ -207,6 +221,54 @@ def verify_github(github: JsonClient, service: Service, sha: str) -> None:
     if not isinstance(main, dict) or str(main.get("sha", "")).lower() != sha:
         raise GateError(f"{sha[:8]} is not the current main of {service.repository}")
     verify_required_checks(github, service.repository, sha, service.required_checks)
+
+
+def verify_prerequisites(
+    config_path: Path,
+    coolify: JsonClient,
+    github: JsonClient,
+    service: Service,
+) -> None:
+    """Refuse de deployer un service dont un prerequis est en retard.
+
+    POURQUOI CETTE GARDE EXISTE
+    Le coordinateur ecrit `effort_tier` et `model_variant` dans le snapshot
+    durable ; le runner porte la fonction SQL qui decide si ce snapshot est
+    normalise. Deployer le coordinateur avant le runner ne perd pas un champ :
+    `job_snapshot_is_normalized` rend `false` et `admit_run` refuse alors
+    100 % des admissions, de toutes les societes, chat et Kanban confondus.
+
+    Jusqu'au 2026-08-08 cet ordre n'existait que dans un plan. Le script prend
+    `--service`, un seul a la fois, donc rien n'empechait de le prendre a
+    l'envers : se tromper etait un clic, pas une erreur detectee.
+
+    LA REGLE, ET SON PRIX
+    Un prerequis doit tourner au SOMMET de son propre `main`. La regle est plus
+    stricte que « le prerequis porte la migration dont j'ai besoin », qu'aucune
+    machine ne sait evaluer. Consequence assumee : un commit sans rapport pousse
+    sur le depot du prerequis bloque ce deploiement jusqu'a ce que le prerequis
+    parte aussi. C'est le bon sens de l'echec · deployer le runner d'abord est
+    precisement ce qu'on veut, et l'inverse arrete la production.
+    """
+    for name in service.requires:
+        prerequis = load_service(config_path, name)
+        repo_path = "/repos/" + urllib.parse.quote(prerequis.repository, safe="/")
+        main = github.get(f"{repo_path}/commits/main")
+        if not isinstance(main, dict) or not isinstance(main.get("sha"), str):
+            raise GateError(f"cannot read main of {prerequis.repository}")
+        attendu = str(main["sha"]).lower()
+        for target in prerequis.targets:
+            application = coolify.get(f"/applications/{target.uuid}")
+            if not isinstance(application, dict):
+                raise GateError(f"invalid Coolify application {target.name}")
+            deploye = str(application.get("git_commit_sha", "")).lower()
+            if deploye != attendu:
+                raise GateError(
+                    f"prerequisite {name} is behind: {target.name} runs "
+                    f"{deploye[:8] or 'nothing'} but {prerequis.repository} main is "
+                    f"{attendu[:8]}. Deploy {name} first: taking this order backwards "
+                    f"makes admit_run refuse every run."
+                )
 
 
 def env_keys(rows: Any) -> list[tuple[str, bool]]:
@@ -360,6 +422,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if not coolify_url.startswith("https://") or not coolify_token:
         raise GateError("COOLIFY_URL and COOLIFY_API_TOKEN are required")
     coolify = JsonClient(f"{coolify_url}/api/v1", coolify_token, "fleetwork-deploy-gate/1")
+    # Avant le vol a blanc comme avant le vrai deploiement : un « validated »
+    # rendu sur un ordre faux serait un feu vert pour la panne.
+    verify_prerequisites(args.config, coolify, github, service)
     if args.dry_run:
         for target in service.targets:
             preflight_target(coolify, service, target)
